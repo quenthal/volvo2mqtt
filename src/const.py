@@ -149,3 +149,4 @@ supported_entities = [
 old_entity_ids = ["months_to_service", "service_warning_trigger", "distance_to_empty"]
 otp_max_loops = 24
 otp_mqtt_topic = "volvoAAOS2mqtt/otp_code"
+otp_required_mqtt_topic = "volvoAAOS2mqtt/otp_required"

@@ -12,7 +12,7 @@ from datetime import datetime
 from babel.dates import format_datetime
 from config import settings
 from const import CLIMATE_START_URL, CLIMATE_STOP_URL, CAR_LOCK_URL, \
-    CAR_UNLOCK_URL, availability_topic, icon_states, old_entity_ids, otp_mqtt_topic
+    CAR_UNLOCK_URL, availability_topic, icon_states, old_entity_ids, otp_mqtt_topic, otp_required_mqtt_topic
 
 mqtt_client: mqtt.Client
 subscribed_topics = []
@@ -84,6 +84,38 @@ def create_otp_input():
         "000000",
         retain=True
     )
+
+
+def create_otp_required_sensor():
+    state_topic = otp_required_mqtt_topic + "/state"
+    config = {
+        "name": "Volvo OTP Required",
+        "default_entity_id": "volvo_otp_required",
+        "state_topic": state_topic,
+        "payload_on": "ON",
+        "payload_off": "OFF",
+        "icon": "mdi:two-factor-authentication",
+        "entity_category": "diagnostic",
+        "availability_topic": availability_topic,
+        "unique_id": "volvoAAOS2mqtt_otp_required",
+    }
+
+    mqtt_client.publish(
+        "homeassistant/binary_sensor/volvoAAOS2mqtt/otp_required/config",
+        json.dumps(config),
+        retain=True
+    )
+
+    set_otp_required(False)
+
+
+def set_otp_required(required: bool):
+    mqtt_client.publish(
+        otp_required_mqtt_topic + "/state",
+        "ON" if required else "OFF",
+        retain=True
+    )
+
 
 def set_otp_state():
     mqtt_client.publish(
@@ -491,6 +523,7 @@ def create_ha_devices():
                 json.dumps(config),
                 retain=True
             )
+    create_otp_required_sensor()
     time.sleep(2)
     send_heartbeat()
 

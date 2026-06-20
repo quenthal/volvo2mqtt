@@ -150,28 +150,34 @@ def check_username_password(auth_session, data):
 
 def send_otp(auth_session, data):
     mqtt.create_otp_input()
-    next_url = data["_links"]["checkOtp"]["href"].replace("http://", "https://") + "?action=checkOtp"
-    body = {"otp": ""}
-
-    for i in range(otp_max_loops):
-        if mqtt.otp_code:
-            body["otp"] = mqtt.otp_code
-            break
-
-        logging.info("Waiting for otp code... Please check your mailbox and post your otp code to the following "
-                     "mqtt topic \"volvoAAOS2mqtt/otp_code\". Retry " + str(i) + "/" + str(otp_max_loops))
-        time.sleep(5)
-
-    if not mqtt.otp_code:
-        raise Exception ("No OTP found, exting...")
-
-    auth = auth_session.post(next_url, data=json.dumps(body))
     mqtt.otp_code = None
-    if auth.status_code == 200:
-        return auth.json()
-    else:
-        message = auth.json()
-        raise Exception(message["details"][0]["userMessage"])
+    mqtt.set_otp_required(True)
+
+    try:
+        next_url = data["_links"]["checkOtp"]["href"].replace("http://", "https://") + "?action=checkOtp"
+        body = {"otp": ""}
+
+        for i in range(otp_max_loops):
+            if mqtt.otp_code:
+                body["otp"] = mqtt.otp_code
+                break
+
+            logging.info("Waiting for otp code... Please check your mailbox and post your otp code to the following "
+                         "mqtt topic \"volvoAAOS2mqtt/otp_code\". Retry " + str(i) + "/" + str(otp_max_loops))
+            time.sleep(5)
+
+        if not mqtt.otp_code:
+            raise Exception("No OTP found, exiting...")
+
+        auth = auth_session.post(next_url, data=json.dumps(body))
+        mqtt.otp_code = None
+        if auth.status_code == 200:
+            return auth.json()
+        else:
+            message = auth.json()
+            raise Exception(message["details"][0]["userMessage"])
+    finally:
+        mqtt.set_otp_required(False)
 
 
 def refresh_auth():
