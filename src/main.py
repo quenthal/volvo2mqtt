@@ -1,4 +1,9 @@
 import logging
+import time
+import volvo
+import keycloak
+import web_login
+from keycloak import LoginRequired, OAuthFailure
 from volvo import authorize
 from mqtt import update_loop, connect
 from const import VERSION
@@ -11,6 +16,14 @@ if __name__ == '__main__':
     validate_settings()
     set_tz()
     set_mqtt_settings()
+    volvo.auth_client = keycloak.configured_client()
+    web_login.start(volvo.auth_client)
     connect()
-    authorize()
+    while True:
+        try:
+            authorize()
+            break
+        except (LoginRequired, OAuthFailure) as error:
+            logging.warning("%s", error)
+            time.sleep(60)
     update_loop()

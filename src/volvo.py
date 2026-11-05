@@ -2,6 +2,10 @@ import json
 import logging
 import requests
 import mqtt
+import keycloak
+import vehicle_commands
+import energy
+import polling
 import util
 import time
 import re
@@ -12,12 +16,13 @@ from config import settings
 from babel.dates import format_datetime
 from json import JSONDecodeError
 from const import charging_system_states, charging_connection_states, door_states, window_states, \
-    OAUTH_AUTH_URL, OAUTH_TOKEN_URL, VEHICLES_URL, VEHICLE_DETAILS_URL, RECHARGE_STATE_URL, CLIMATE_START_URL, \
+    VEHICLES_URL, VEHICLE_DETAILS_URL, RECHARGE_STATE_URL, CLIMATE_START_URL, \
     WINDOWS_STATE_URL, LOCK_STATE_URL, TYRE_STATE_URL, supported_entities, FUEL_BATTERY_STATE_URL, \
     STATISTICS_URL, ENGINE_DIAGNOSTICS_URL, VEHICLE_DIAGNOSTICS_URL, API_BACKEND_STATUS, WARNINGS_URL, engine_states, \
     otp_max_loops
 
-session = requests.Session()
+session = polling.CountingSession()
+endpoint_cache = polling.EndpointCache()
 session.headers = {
     "vcc-api-key": "",
     "content-type": "application/json",
@@ -33,206 +38,35 @@ vcc_api_keys = []
 backend_status = ""
 
 
-def authorize(renew_tokenfile=False):
-    global refresh_token
-
-    token_path = util.get_token_path()
-    if os.path.isfile(token_path) and not renew_tokenfile:
-        logging.info("Using login from token file")
-        f = open(token_path)
-        try:
-            data = json.load(f)
-            refresh_token = data["refresh_token"]
-            refresh_auth()
-        except ValueError:
-            logging.warning("Detected corrupted token file, restarting auth process")
-            authorize(True)
-            return
-        except KeyError:
-            logging.warning("Token file missing refresh_token, restarting auth process")
-            authorize(True)
-            return
-    else:
-        logging.info("Starting login with OTP")
-        auth_session = requests.session()
-        auth_session.headers = {
-            "authorization": "Basic aDRZZjBiOlU4WWtTYlZsNnh3c2c1WVFxWmZyZ1ZtSWFEcGhPc3kxUENhVXNpY1F0bzNUUjVrd2FKc2U0QVpkZ2ZJZmNMeXc=",
-            "User-Agent": "vca-android/" + util.get_volvo_app_version(),
-            "Accept-Encoding": "gzip",
-            "Content-Type": "application/json; charset=utf-8"
-        }
-
-        url_params = ("?client_id=h4Yf0b"
-                      "&response_type=code"
-                      "&acr_values=urn:volvoid:aal:bronze:2sv"
-                      "&response_mode=pi.flow"
-                      "&scope=openid email profile care_by_volvo:financial_information:invoice:read care_by_volvo:financial_information:payment_method care_by_volvo:subscription:read customer:attributes customer:attributes:write order:attributes vehicle:attributes tsp_customer_api:all conve:brake_status conve:climatization_start_stop conve:command_accessibility conve:commands conve:diagnostics_engine_status conve:diagnostics_workshop conve:doors_status conve:engine_status conve:environment conve:fuel_status conve:honk_flash conve:lock conve:lock_status conve:navigation conve:odometer_status conve:trip_statistics conve:tyre_status conve:unlock conve:vehicle_relation conve:warnings conve:windows_status energy:battery_charge_level energy:charging_connection_status energy:charging_system_status energy:electric_range energy:estimated_charging_time energy:recharge_status vehicle:attributes")
-
-        auth = auth_session.get(OAUTH_AUTH_URL + url_params)
-        if auth.status_code == 200:
-            response = auth.json()
-            auth_state = response["status"]
-
-            if auth_state == "USERNAME_PASSWORD_REQUIRED":
-                auth_session.headers.update({"x-xsrf-header": "PingFederate"})
-                response = check_username_password(auth_session, response)
-                auth_state = response["status"]
-
-                if auth_state == "OTP_REQUIRED":
-                    response = send_otp(auth_session, response)
-                    response = continue_auth(auth_session, response)
-                    token_data = get_token(auth_session, response)
-                else:
-                    raise Exception("Unkown auth state " + auth_state)
-            elif auth_state == "OTP_REQUIRED":
-                response = send_otp(auth_session, response)
-                response = continue_auth(auth_session, response)
-                token_data = get_token(auth_session, response)
-            elif auth_state == "OTP_VERIFIED":
-                response = continue_auth(auth_session, response)
-                token_data = get_token(auth_session, response)
-            elif auth_state == "COMPLETED":
-                token_data = get_token(auth_session, response)
-            else:
-                raise Exception("Unkown auth state " + auth_state)
-
-            session.headers.update({"authorization": "Bearer " + token_data["access_token"]})
-
-            global token_expires_at
-            token_expires_at = datetime.now(util.TZ) + timedelta(seconds=(token_data["expires_in"] - 30))
-            refresh_token = token_data["refresh_token"]
-
-            util.save_to_json(token_data, token_path)
-        else:
-            message = auth.json()
-            raise Exception(message["details"][0]["userMessage"])
-
-    get_vcc_api_keys()
-    get_vehicles()
-    check_supported_endpoints()
-    Thread(target=backend_status_loop,name="backend_status_thread").start()
-
-def continue_auth(auth_session, data):
-    next_url = data["_links"]["continueAuthentication"]["href"].replace("http://", "https://") + "?action=continueAuthentication"
-    auth = auth_session.post(next_url, data="{}")
-
-    if auth.status_code == 200:
-        return auth.json()
-    else:
-        message = auth.json()
-        raise Exception(message["details"][0]["userMessage"])
-
-
-def get_token(auth_session, data):
-    auth_session.headers.update({"content-type": "application/x-www-form-urlencoded"})
-    body = {"code": data["authorizeResponse"]["code"], "grant_type": "authorization_code"}
-    token_auth = auth_session.post(OAUTH_TOKEN_URL, data=body)
-
-    if token_auth.status_code == 200:
-        return token_auth.json()
-    else:
-        message = token_auth.json()
-        raise Exception(message["error_description"])
-
-
-def check_username_password(auth_session, data):
-    next_url = data["_links"]["checkUsernamePassword"]["href"].replace("http://", "https://") + "?action=checkUsernamePassword"
-    body = {"username": settings.volvoData["username"],
-             "password": settings.volvoData["password"]}
-    auth = auth_session.post(next_url, data=json.dumps(body))
-
-    if auth.status_code == 200:
-        return auth.json()
-    else:
-        message = auth.json()
-        raise Exception(message["details"][0]["userMessage"])
-
-
-def send_otp(auth_session, data):
-    mqtt.create_otp_input()
-    next_url = data["_links"]["checkOtp"]["href"].replace("http://", "https://") + "?action=checkOtp"
-    body = {"otp": ""}
-
-    for i in range(otp_max_loops):
-        if mqtt.otp_code:
-            body["otp"] = mqtt.otp_code
-            break
-
-        logging.info("Waiting for otp code... Please check your mailbox and post your otp code to the following "
-                     "mqtt topic \"volvoAAOS2mqtt/otp_code\". Retry " + str(i) + "/" + str(otp_max_loops))
-        time.sleep(5)
-
-    if not mqtt.otp_code:
-        raise Exception ("No OTP found, exting...")
-
-    auth = auth_session.post(next_url, data=json.dumps(body))
-    mqtt.otp_code = None
-    if auth.status_code == 200:
-        return auth.json()
-    else:
-        message = auth.json()
-        raise Exception(message["details"][0]["userMessage"])
+auth_client = None
 
 
 def refresh_auth():
-    global refresh_token
-    logging.info("Refreshing credentials with token " + refresh_token)
-
-    headers = {
-        "authorization": "Basic aDRZZjBiOlU4WWtTYlZsNnh3c2c1WVFxWmZyZ1ZtSWFEcGhPc3kxUENhVXNpY1F0bzNUUjVrd2FKc2U0QVpkZ2ZJZmNMeXc=",
-        "content-type": "application/x-www-form-urlencoded",
-        "accept": "application/json"
-    }
-
-    body = {
-        "grant_type": "refresh_token",
-        "refresh_token": refresh_token
-    }
-
+    global auth_client, token_expires_at
+    if auth_client is None:
+        auth_client = keycloak.configured_client()
     try:
-        auth = requests.post(OAUTH_TOKEN_URL, data=body, headers=headers)
-    except requests.exceptions.RequestException as e:
-        logging.error("Error refreshing credentials data: " + str(e))
-        return None
+        access_token = auth_client.access_token()
+    except keycloak.LoginRequired:
+        mqtt.set_login_required(True)
+        raise
+    session.headers.update({"authorization": "Bearer " + access_token})
+    token_expires_at = datetime.fromtimestamp(auth_client.token["expires_at"], util.TZ)
+    mqtt.set_login_required(False)
+    return True
 
-    if auth.status_code == 200:
-        token_path = util.get_token_path()
-        if os.path.exists(token_path):
-            with open(token_path) as f:
-                data = json.load(f)
 
-        refresh_data = auth.json()
-
-        if not "refresh_token" in refresh_data:
-            f = open(token_path)
-            try:
-                data = json.load(f)
-                refresh_data["refresh_token"] = data["refresh_token"]
-            except ValueError:
-                raise Exception("Cannot refresh token!")
-        else:
-            logging.info("New refresh token found, updating!")
-
-        util.save_to_json(refresh_data, token_path)
-        session.headers.update({"authorization": "Bearer " + refresh_data["access_token"]})
-
-        global token_expires_at
-        token_expires_at = datetime.now(util.TZ) + timedelta(seconds=(data["expires_in"] - 30))
-        refresh_token = data["refresh_token"]
-        return None
-    elif int(auth.status_code / 100) == 5:
-        # Server error try again later
-        logging.warning("Refreshing credentials failed!: " + str(auth.status_code) + " Message: " + auth.text)
-        return None
-    else:
-        # TODO check other codes that dont have to force the renew_tokenfile
-        logging.warning("Refreshing credentials failed!: " + str(auth.status_code) + " Message: " + auth.text)
-        authorize(renew_tokenfile=True)
-        return None
+def authorize(renew_tokenfile=False):
+    refresh_auth()
+    get_vcc_api_keys()
+    get_vehicles()
+    check_supported_endpoints()
+    Thread(target=backend_status_loop, name="backend_status_thread", daemon=True).start()
 
 
 def get_vehicles():
     global vins
+    vins = []
     if not settings.volvoData["vin"]:
         vehicles = session.get(VEHICLES_URL)
         data = vehicles.json()
@@ -241,7 +75,7 @@ def get_vehicles():
                 for vehicle in data["data"]:
                     vins.append(vehicle["vin"])
             else:
-                raise Exception("No vehicle in account " + settings.volvoData["username"] + " found.")
+                raise Exception("No vehicle found in this Volvo account.")
         else:
             error = vehicles.json()
             raise Exception(
@@ -274,7 +108,7 @@ def get_vcc_api_keys(used_key=None):
             for key in setting_keys:
                 set_key_state(key)
 
-        logging.debug(str(vcc_api_keys))
+        logging.debug("VCC API key status checked")
         working_keys = [key["key"] for key in vcc_api_keys if not key.get("extended") and key.get('key') != used_key]
         if len(working_keys) < 1:
             used_key = None
@@ -284,12 +118,12 @@ def get_vcc_api_keys(used_key=None):
         else:
             mqtt.send_heartbeat()
             session.headers.update({"vcc-api-key": working_keys[0]})
-            logging.info("Using VCCAPIKEY: " + working_keys[0])
+            logging.info("Using a configured VCC API key")
             for key_dict in vcc_api_keys:
                 if key_dict["key"] == working_keys[0]:
                     key_dict["in_use"] = True
 
-        logging.debug(str(vcc_api_keys))
+        logging.debug("VCC API key status checked")
 
 
 def set_key_state(key):
@@ -309,12 +143,11 @@ def set_key_state(key):
 def check_vcc_api_key(test_key, extended_until=None):
     if extended_until:
         if extended_until >= datetime.now():
-            logging.warning("VCCAPIKEY " + test_key + " is extended and will be reusable at: "
+            logging.warning("VCC API key quota exhausted; reusable at: "
                             + format_datetime(extended_until, format="medium", locale=settings["babelLocale"]))
             return True, extended_until
 
-    if datetime.now(util.TZ) >= token_expires_at:
-        refresh_auth()
+    refresh_auth()
 
     token = session.headers.get("authorization")
     headers = {
@@ -324,10 +157,10 @@ def check_vcc_api_key(test_key, extended_until=None):
         "authorization": token
     }
 
-    response = requests.get(VEHICLES_URL, headers=headers)
+    response = session.get(VEHICLES_URL, headers=headers, timeout=20)
     data = response.json()
     if response.status_code == 200:
-        logging.debug("VCCAPIKEY " + test_key + " works!")
+        logging.debug("VCC API key works")
         return False, None
     elif response.status_code == 403 and "message" in data:
         if "Out of call volume quota" in data["message"]:
@@ -338,19 +171,19 @@ def check_vcc_api_key(test_key, extended_until=None):
                 extended_until = now + timedelta(hours=int(reusable_in[0]),
                                                  minutes=int(reusable_in[1]),
                                                  seconds=int(reusable_in[2]) + 10)
-                logging.warning("VCCAPIKEY " + test_key + " is extended and will be reusable at: "
+                logging.warning("VCC API key quota exhausted; reusable at: "
                                 + format_datetime(extended_until, format="medium", locale=settings["babelLocale"]))
         else:
             if "error" in data:
-                logging.warning("VCCAPIKEY " + test_key + " isn't working! " + data["error"]["message"])
+                logging.warning("Configured VCC API key failed: " + data["error"]["message"])
             else:
-                logging.warning("VCCAPIKEY " + test_key + " isn't working! Statuscode " + str(response.status_code) +
+                logging.warning("Configured VCC API key failed. Statuscode " + str(response.status_code) +
                                 " Message: " + response.text)
     else:
         if "error" in data:
-            logging.warning("VCCAPIKEY " + test_key + " isn't working! " + data["error"]["message"])
+            logging.warning("Configured VCC API key failed: " + data["error"]["message"])
         else:
-            logging.warning("VCCAPIKEY " + test_key + " isn't working! Statuscode " + str(response.status_code) +
+            logging.warning("Configured VCC API key failed. Statuscode " + str(response.status_code) +
                             " Message: " + response.text)
     return True, extended_until
 
@@ -391,12 +224,17 @@ def check_supported_endpoints():
     global supported_endpoints
     for vin in vins:
         supported_endpoints[vin] = []
+        refresh_auth()
+        energy_supported = energy.capabilities(session, vin)
         for entity in supported_entities:
             if entity["id"] == "battery_charge_level" and entity["url"] == FUEL_BATTERY_STATE_URL \
                     and any("battery_charge_level" in d["id"] for d in supported_endpoints[vin]):
                 # If battery charge level could be found in recharge-api, skip the second battery charge sensor
                 continue
 
+            if entity.get("url") == RECHARGE_STATE_URL and entity["id"] in energy_supported:
+                supported_endpoints[vin].append(entity)
+                continue
             if entity.get('url'):
                 state = api_call(entity["url"], "GET", vin, entity["id"])
             else:
@@ -407,6 +245,17 @@ def check_supported_endpoints():
                 supported_endpoints[vin].append(entity)
             else:
                 logging.info("Failed, " + entity["name"] + " is unfortunately not supported by your vehicle.")
+
+        refresh_auth()
+        supported_endpoints[vin].extend(vehicle_commands.discover(session, vin))
+
+
+def execute_optional_command(vin, entity_id):
+    allowed = {entity["id"] for entity in supported_endpoints.get(vin, []) if entity.get("vehicle_command")}
+    if vin not in vins or entity_id not in allowed:
+        return False
+    refresh_auth()
+    return vehicle_commands.execute(session, vin, entity_id, allowed)
 
 
 def initialize_scheduler(vins):
@@ -423,47 +272,23 @@ def initialize_climate(vins):
 
 
 def disable_climate(vin):
-    logging.info("Turning climate off by timer!")
-    mqtt.engine_status[vin].do_run = False
-    mqtt.assumed_climate_state[vin] = "OFF"
-    mqtt.update_car_data()
+    mqtt.clear_climate_assumption(vin)
 
 
 def check_lock_status(vin, old_state):
-    max_runs = 10
-    done_runs = 0
-    lock_state = api_call(LOCK_STATE_URL, "GET", vin, "lock_status", True)
-    while lock_state == old_state:
-        done_runs = done_runs + 1
-        if done_runs >= max_runs:
-            break
-        lock_state = api_call(LOCK_STATE_URL, "GET", vin, "lock_status", True)
-        time.sleep(2)
-
-    mqtt.update_car_data()
+    target = "UNLOCKED" if old_state == "LOCKED" else "LOCKED"
+    state = None
+    for _ in range(3):
+        time.sleep(10)
+        state = api_call(LOCK_STATE_URL,"GET",vin,"lock_status",True)
+        if state is not None:mqtt.publish_local_state(vin,"lock_status",state)
+        if state == target:return True
+    logging.warning("Lock target was not confirmed within bounded polling")
+    return False
 
 
 def check_engine_status(vin):
-    endpoint_url = ""
-    engine_state_supported = False
-    for endpoint in supported_endpoints[vin]:
-        if "engine_state" == endpoint["id"]:
-            engine_state_supported = True
-            endpoint_url = endpoint["url"]
-
-    if not engine_state_supported:
-        # Exit thread as engine state is unsupported by car
-        return None
-
-    t = current_thread()
-    while getattr(t, "do_run", True):
-        engine_state = api_call(endpoint_url, "GET", vin, "engine_state", True)
-        if engine_state == "ON":
-            mqtt.assumed_climate_state[vin] = "OFF"
-            mqtt.update_car_data()
-            break
-
-        time.sleep(5)
+    # Compatibility stub: normal polling now observes driving state.
     return None
 
 
@@ -480,7 +305,7 @@ def get_backend_status():
     try:
         response = session.get(API_BACKEND_STATUS, timeout=15)
         try:
-            data = response.json()
+            data = util.drop_null_fields(response.json())
             if util.keys_exists(data, "message"):
                 if data["message"]:
                     backend_status = data["message"]
@@ -492,39 +317,27 @@ def get_backend_status():
         except JSONDecodeError as e:
             logging.error(f"Invalid json response from API Backend Status - {response} - {e}")
             backend_status = "APIERR_INVALID_JSON_RESPONSE"
-            
+
     except requests.exceptions.ReadTimeout as e:
         logging.error(f"API Backend Status - timeout - {e}")
         backend_status = "APIERR_TIMEOUT"
     except requests.exceptions.RequestException as e:
         logging.error(f"API Backend Status - Error - {e}")
         backend_status = "APIERR_REQUEST_ERROR"
-        
+
     return backend_status
 
 
 def api_call(url, method, vin, sensor_id=None, force_update=False, key_change=False):
-    if datetime.now(util.TZ) >= token_expires_at:
-        refresh_auth()
+    refresh_auth()
 
-    if url in [RECHARGE_STATE_URL, WINDOWS_STATE_URL, LOCK_STATE_URL, TYRE_STATE_URL,
-               STATISTICS_URL, ENGINE_DIAGNOSTICS_URL, VEHICLE_DIAGNOSTICS_URL, FUEL_BATTERY_STATE_URL, WARNINGS_URL]:
-        # Minimize API calls for endpoints with multiple values
+    if method == "GET":
         response = cached_request(url, method, vin, force_update, key_change)
-        if response is None:
-            # Exception caught while getting data from volvo api, doing nothing
-            return None
-    elif method == "GET":
-        logging.debug(f"Starting {method} call against {url}")
-        try:
-            response = session.get(url.format(vin), timeout=15)
-        except requests.exceptions.RequestException as e:
-            logging.error(f"Error getting data: {e} from {url}")
-            return None
+        if response is None:return None
     elif method == "POST":
         logging.debug(f"Starting {method} call against {url}")
         try:
-            response = session.post(url.format(vin), timeout=20)
+            response = session.post(url.format(vin), json={}, timeout=20, allow_redirects=False)
         except requests.exceptions.RequestException as e:
             logging.error(f"Error getting data from {url} : {e}")
             return None
@@ -534,14 +347,31 @@ def api_call(url, method, vin, sensor_id=None, force_update=False, key_change=Fa
 
     logging.debug(f"Response status code: {response.status_code}")
     try:
-        data = response.json()
+        data = util.drop_null_fields(response.json())
     except JSONDecodeError as e:
         logging.error(f"Fetched json decode error, Volvo API seems to return garbage. Skipping update. Error: {e}")
         return None
 
+    if method == "POST":
+        if response.status_code != 200:
+            logging.warning("Vehicle command rejected: HTTP %s (not retried)", response.status_code)
+            return False
+        result = data.get("data", data) if isinstance(data, dict) else {}
+        status = result.get("invokeStatus") if isinstance(result, dict) else None
+        accepted = status in ("WAITING", "RUNNING", "COMPLETED", "SUCCESS")
+        logging.info("Vehicle command acceptance: %s", status if accepted else "not confirmed")
+        return accepted
+
     if response.status_code == 200:
         logging.debug(response.text)
-        return parse_api_data(data, sensor_id)
+        try:
+            parsed = parse_api_data(data, sensor_id)
+            if sensor_id == "engine_state" and parsed == "ON":
+                mqtt.clear_climate_assumption(vin)
+            return parsed
+        except (KeyError, TypeError, ValueError, IndexError):
+            logging.warning("Skipping malformed API data for sensor %s", sensor_id)
+            return None
     else:
         logging.debug(response.text)
         if url == CLIMATE_START_URL and response.status_code == 503:
@@ -566,76 +396,35 @@ def api_call(url, method, vin, sensor_id=None, force_update=False, key_change=Fa
 
 
 def cached_request(url, method, vin, force_update=False, key_change=False):
-    global cached_requests
-    if not util.keys_exists(cached_requests, vin + "_" + url):
-        # No API Data cached, get fresh data from API
-        logging.debug(f"Starting {method} call against {url}")
-        try:
-            response = session.get(url.format(vin), timeout=15)
-        except requests.exceptions.RequestException as e:
-            logging.error(f"Error getting data from {url}: {e}")
-            return None
-
-        data = {"response": response, "last_update": datetime.now(util.TZ)}
-        cached_requests[vin + "_" + url] = data
-    else:
-        if (datetime.now(util.TZ) - cached_requests[vin + "_" + url]["last_update"]).total_seconds() \
-                >= settings["updateInterval"] or (force_update and
-                                                  (datetime.now(util.TZ) - cached_requests[vin + "_" + url][
-                                                      "last_update"]).total_seconds() >= 2) \
-                or key_change:
-            # Old Data in Cache, or force mode active, updating
-            logging.debug(f"Starting {method} call against {url}")
-            try:
-                response = session.get(url.format(vin), timeout=15)
-            except requests.exceptions.RequestException as e:
-                logging.error(f"Error getting data from {url} : {e}")
-                return None
-            data = {"response": response, "last_update": datetime.now(util.TZ)}
-            cached_requests[vin + "_" + url] = data
-        else:
-            # Data is up do date, returning cached data
-            response = cached_requests[vin + "_" + url]["response"]
-    return response
+    return endpoint_cache.get(session,url,vin,settings.get("updateInterval",300),force_update or key_change)
 
 
 def parse_api_data(data, sensor_id=None):
-    if sensor_id in ["battery_charge_level", "electric_range", "charging_system_status",
-                     "charging_connection_status", "estimated_charging_time", "estimated_charging_finish_time"]:
-
-        if sensor_id == "battery_charge_level":
-            return data["batteryChargeLevel"]["value"] if util.keys_exists(data, "batteryChargeLevel") and data["batteryChargeLevel"]["value"] is not None else None
-        elif sensor_id == "electric_range":
-            return util.convert_metric_values(data["electricRange"]["value"]) \
-                if util.keys_exists(data, "electricRange") and data["electricRange"]["value"] is not None else None
-        elif sensor_id == "charging_system_status":
-            return charging_system_states[data["chargingStatus"]["value"]] \
-                if util.keys_exists(data, "chargingStatus") and data["chargingStatus"]["value"] is not None else None
-        elif sensor_id == "charging_connection_status":
-            return charging_connection_states[data["chargerConnectionStatus"]["value"]] \
-                if util.keys_exists(data, "chargerConnectionStatus") and data["chargerConnectionStatus"]["value"] is not None else None
-        elif sensor_id == "estimated_charging_time":
-            if util.keys_exists(data, "chargingStatus") and data["chargingStatus"]["value"] is not None:
-                charging_system_state = charging_system_states[data["chargingStatus"]["value"]]
-                if charging_system_state == "Charging":
-                    return data["estimatedChargingTimeToTargetBatteryChargeLevel"]["value"] if util.keys_exists(data,
-                                                                                      "estimatedChargingTimeToTargetBatteryChargeLevel") and data["estimatedChargingTimeToTargetBatteryChargeLevel"]["value"] is not None else ""
-                else:
-                    return 0
-            return None
-        elif sensor_id == "estimated_charging_finish_time":
-            if util.keys_exists(data, "estimatedChargingTimeToTargetBatteryChargeLevel") and data["estimatedChargingTimeToTargetBatteryChargeLevel"]["value"] is not None:
-                charging_system_state = charging_system_states[data["chargingStatus"]["value"]] if util.keys_exists(data, "chargingStatus") and data["chargingStatus"]["value"] is not None else None
-                if charging_system_state == "Charging":
-                    charging_time = int(
-                        data["estimatedChargingTimeToTargetBatteryChargeLevel"]["value"] if util.keys_exists(data, "estimatedChargingTimeToTargetBatteryChargeLevel") and data["estimatedChargingTimeToTargetBatteryChargeLevel"]["value"] is not None
-                        else 0)
-                    charging_finished = datetime.now(util.TZ) + timedelta(minutes=charging_time)
-                    return format_datetime(charging_finished, format="medium", locale=settings["babelLocale"])
-                else:
-                    return ""
-            return None
-        return None
+    if sensor_id in energy.FIELDS:
+        field = energy.FIELDS[sensor_id]
+        result = energy.value(data, field)
+        if sensor_id == "electric_range":
+            return util.convert_metric_values(result) if result is not None else None
+        if sensor_id == "charging_system_status":
+            return charging_system_states.get(result, result)
+        if sensor_id == "charging_connection_status":
+            return charging_connection_states.get(result, result)
+        if sensor_id in ("estimated_charging_time", "estimated_charging_finish_time"):
+            status = energy.value(data, "chargingStatus")
+            if status is None:return None
+            if status != "CHARGING":
+                return 0 if sensor_id == "estimated_charging_time" else ""
+            if result is None:return None
+            minutes = float(result)
+            if minutes < 0:return None
+            if sensor_id == "estimated_charging_time":return minutes
+            return format_datetime(datetime.now(util.TZ) + timedelta(minutes=minutes), format="medium", locale=settings["babelLocale"])
+        if sensor_id == "charging_power" and result is not None:
+            item = data.get("chargingPower", {})
+            unit = item.get("unit")
+            if unit in ("kW", "kilowatt"):return float(result) * 1000
+            if unit not in ("W", "watt", None):return None
+        return result
     else:
         if sensor_id != "api_backend_status":
             data = data["data"]

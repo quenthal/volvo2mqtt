@@ -1,0 +1,14 @@
+services:
+  volvo2mqtt:
+    build: .
+    image: local/volvo2mqtt:keycloak
+    restart: unless-stopped
+    ports:
+      - "192.168.1.221:8080:8080"
+    environment:
+      TZ: Europe/Helsinki
+      TOKEN_PATH: /data/keycloak-token.json
+    volumes:
+      - ./settings.json:/volvoAAOS2mqtt/settings.json:ro
+      - ./data:/data
+      - ./web-password:/run/secrets/web_password:ro

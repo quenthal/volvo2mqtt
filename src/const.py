@@ -1,9 +1,7 @@
 from config import settings
 
-VERSION = "v1.13.7"
+VERSION = "2026.11.1"
 
-OAUTH_TOKEN_URL = "https://volvoid.eu.volvocars.com/as/token.oauth2"
-OAUTH_AUTH_URL = "https://volvoid.eu.volvocars.com/as/authorization.oauth2"
 VEHICLES_URL = "https://api.volvocars.com/connected-vehicle/v2/vehicles"
 VEHICLE_DETAILS_URL = "https://api.volvocars.com/connected-vehicle/v2/vehicles/{0}"
 WINDOWS_STATE_URL = "https://api.volvocars.com/connected-vehicle/v2/vehicles/{0}/windows"
@@ -94,6 +92,11 @@ icon_states = {
 }
 
 supported_entities = [
+    {"name": "Charging Type", "domain": "sensor", "id": "charging_type", "icon": "ev-plug-type2", "url": RECHARGE_STATE_URL},
+    {"name": "Charging Power Status", "domain": "sensor", "id": "charging_power_status", "icon": "power-plug", "url": RECHARGE_STATE_URL},
+    {"name": "Charging Current Limit", "domain": "sensor", "id": "charging_current_limit", "device_class": "current", "unit": "A", "state_class": "measurement", "icon": "current-ac", "url": RECHARGE_STATE_URL},
+    {"name": "Target Battery Charge Level", "domain": "sensor", "id": "target_battery_charge_level", "unit": "%", "icon": "battery-charging", "url": RECHARGE_STATE_URL},
+    {"name": "Charging Power", "domain": "sensor", "id": "charging_power", "device_class": "power", "unit": "W", "state_class": "measurement", "icon": "flash", "url": RECHARGE_STATE_URL},
                         {"name": "Battery Charge Level", "domain": "sensor", "device_class": "battery", "id": "battery_charge_level", "unit": "%", "icon": "car-battery", "url": RECHARGE_STATE_URL, "state_class": "measurement"},
                         {"name": "Battery Charge Level", "domain": "sensor", "device_class": "battery", "id": "battery_charge_level", "unit": "%", "icon": "car-battery", "url": FUEL_BATTERY_STATE_URL, "state_class": "measurement"},
                         {"name": "Battery Capacity", "domain": "sensor", "device_class": "energy_storage", "id": "battery_capacity", "unit": ENERGY_KILO_WATT_HOUR, "icon": "car-battery", "url": VEHICLE_DETAILS_URL, "state_class": "measurement"},

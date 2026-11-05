@@ -1,0 +1,3 @@
+services:
+  volvo2mqtt:
+    image: local/volvo2mqtt:keycloak-evening

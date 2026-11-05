@@ -1,0 +1,25 @@
+{
+  "oauth": {
+    "client_id": "REPLACE_WITH_NEW_APPLICATION_CLIENT_ID",
+    "client_secret": "REPLACE_WITH_NEW_APPLICATION_CLIENT_SECRET",
+    "redirect_uri": "https://volvo.konttaniemi.fi/oauth/callback",
+    "scopes": "conve:battery_charge_level conve:brake_status conve:climatization_start_stop conve:command_accessibility conve:commands conve:connectivity_status conve:diagnostics_engine_status conve:diagnostics_workshop conve:doors_status conve:engine_start_stop conve:engine_status conve:environment conve:fuel_status conve:honk_flash conve:lock conve:lock_status conve:navigation conve:odometer_status conve:trip_statistics conve:tyre_status conve:unlock conve:vehicle_relation conve:warnings conve:windows_status energy:capability:read energy:state:read location:read",
+    "request_offline_access": false
+  },
+  "volvoData": {
+    "vccapikey": "REPLACE_WITH_NEW_APPLICATION_API_KEY",
+    "vin": "",
+    "odometerMultiplier": 1
+  },
+  "mqtt": {
+    "broker": "REPLACE_WITH_BROKER_IP",
+    "port": 1883,
+    "username": "",
+    "password": ""
+  },
+  "mqtt_client_id": "volvoAAOS2mqtt_keycloak",
+  "updateInterval": 300,
+  "babelLocale": "fi_FI",
+  "TZ": "Europe/Helsinki",
+  "debug": false
+}

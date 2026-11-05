@@ -1,3 +1,5 @@
+> **Keycloak fork:** Docker setup and migration instructions: [README-KEYCLOAK.fi.md](README-KEYCLOAK.fi.md). The upstream instructions below describe the old authentication flow.
+
 # Volvo2Mqtt
 
 ![Supports aarch64 Architecture][aarch64-shield]

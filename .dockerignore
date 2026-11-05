@@ -1,0 +1,11 @@
+.git
+.venv
+**/__pycache__
+/data
+/settings.json
+*.log
+.env
+.env.*
+.token
+**/.token
+/web-password

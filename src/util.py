@@ -112,7 +112,7 @@ def keys_exists(element, *keys):
     be treated the same as a missing key.
     """
     if not isinstance(element, dict):
-        raise AttributeError('keys_exists() expects dict as first argument.')
+        return False
     if len(keys) == 0:
         raise AttributeError('keys_exists() expects at least two arguments, one given.')
 
@@ -181,3 +181,11 @@ def validate_settings():
         update_interval = settings["updateInterval"]
         if update_interval < 60:
             raise Exception("Settings invalid! Minimum allowed update interval is 60 seconds!")
+
+
+def drop_null_fields(value):
+    if isinstance(value, dict):
+        return {key: drop_null_fields(item) for key, item in value.items() if item is not None}
+    if isinstance(value, list):
+        return [drop_null_fields(item) for item in value]
+    return value
