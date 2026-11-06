@@ -1,4 +1,4 @@
-# Volvo2mqtt 2026.11.1
+# Volvo2mqtt 2026.11.2
 
 Oma Docker-versio, pohjana Dielee/volvo2mqtt commit 25045e90e1899aa7b994bf2c7d2e933b041b4834.
 
@@ -7,6 +7,17 @@ Oma Docker-versio, pohjana Dielee/volvo2mqtt commit 25045e90e1899aa7b994bf2c7d2e
 Keycloak-kirjautuminen, tokenin uusiminen ja rotaatio on testattu oikealla tilillä. Sensorien ja lisäpainikkeiden MQTT-discovery on testattu. Aiemman koekäytön jälkeen komentojen jonotus ja hakujen rytmitys uusittiin; nämä viimeisimmät muutokset on testattu automaattisesti, mutta niiden autolla tehtävä hyväksymiskoe on vielä kesken.
 
 Tämä julkaisu tukee itsenäistä Docker-asennusta. Mukana oleva upstreamin HA-lisäosarakenne ei ole tässä julkaisussa toimivaksi sovitettu tai testattu. Vanha OTP-anturi jää vanhaan haaraan.
+
+## Muutokset 2026.11.2
+
+- Lukitus ja avaus kirjataan onnistuneiksi vasta, kun tilahaku vahvistaa ne. Vahvistamaton komento voidaan toistaa heti.
+- Esilämmityksen tavoite viedään jonoon atomisesti. Vaimennetun toiston takaisinkutsu ajetaan jonon lukon ulkopuolella.
+- Päivityspainike, päivitysvälin muutos ja ajastuksen asetus eivät enää aja hakuja MQTT-säikeessä.
+- Volvon hylkäämää refresh tokenia ei lähetetä uudelleen ennen uutta kirjautumista tai uudelleenkäynnistystä.
+- Ajotila nollaa esilämmitysoletuksen vain, kun oletus on päällä, ja nollaus kirjataan lokiin.
+- Komentotopicit tilataan kerran, ja discovery-config julkaistaan uudelleen vain sen muuttuessa.
+- API-avaimen vaihto ohittaa välimuistin. Latausteho lukee yksikön myös `data`-kääreestä.
+- Web-kirjautuminen: pyyntöjen aikakatkaisu ja viive virheellisen salasanan jälkeen. Lokissa ei enää näy VIN-numeroa.
 
 ## Mukana
 

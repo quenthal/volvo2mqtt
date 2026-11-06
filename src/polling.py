@@ -36,14 +36,14 @@ class EndpointCache:
         if path.endswith(("/odometer","/statistics","/location")):return 900
         if '/vehicles/' in path and path.rsplit('/',1)[-1].startswith('{'):return 86400
         return max(60,default)
-    def get(self,session,url,vin,default=300,force=False):
+    def get(self,session,url,vin,default=300,force=False,bypass=False):
         key=(vin,url)
         with self.lock:
             now=time.monotonic()
             old=self.items.get(key)
             ttl=10 if force else self.interval(url,vin,default)
             if old and (old[1] is None or old[1].status_code != 200):ttl=min(ttl,30)
-            if old and now-old[0]<ttl:return old[1]
+            if old and not bypass and now-old[0]<ttl:return old[1]
             try:
                 response=session.get(url.format(vin),timeout=15,allow_redirects=False)
             except requests.RequestException:

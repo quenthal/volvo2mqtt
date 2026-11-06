@@ -94,7 +94,7 @@ def get_vehicles():
         initialize_climate(vins)
         initialize_scheduler(vins)
         mqtt.delete_old_entities()
-        logging.info("Vin: " + str(vins) + " found!")
+        logging.info("%s vehicle(s) found", len(vins))
 
 
 def get_vcc_api_keys(used_key=None):
@@ -366,7 +366,8 @@ def api_call(url, method, vin, sensor_id=None, force_update=False, key_change=Fa
         logging.debug(response.text)
         try:
             parsed = parse_api_data(data, sensor_id)
-            if sensor_id == "engine_state" and parsed == "ON":
+            if sensor_id == "engine_state" and parsed == "ON" and mqtt.assumed_climate_state.get(vin) == "ON":
+                logging.info("Engine state ON observed; clearing assumed pre-climatization (no command sent)")
                 mqtt.clear_climate_assumption(vin)
             return parsed
         except (KeyError, TypeError, ValueError, IndexError):
@@ -386,7 +387,7 @@ def api_call(url, method, vin, sensor_id=None, force_update=False, key_change=Fa
             if "Out of call volume quota" in data["message"]:
                 logging.warning("Quota extended. Try to change VCCAPIKEY!")
                 change_vcc_api_key()
-                api_call(url, method, vin, sensor_id, force_update, True)
+                return api_call(url, method, vin, sensor_id, force_update, True)
             else:
                 logging.error(
                     f"API Call failed to {url}. Status Code: {response.status_code}. Error: {response.text}")
@@ -396,7 +397,8 @@ def api_call(url, method, vin, sensor_id=None, force_update=False, key_change=Fa
 
 
 def cached_request(url, method, vin, force_update=False, key_change=False):
-    return endpoint_cache.get(session,url,vin,settings.get("updateInterval",300),force_update or key_change)
+    # After a key change the cached response belongs to the previous key.
+    return endpoint_cache.get(session,url,vin,settings.get("updateInterval",300),force_update,bypass=key_change)
 
 
 def parse_api_data(data, sensor_id=None):
@@ -420,7 +422,8 @@ def parse_api_data(data, sensor_id=None):
             if sensor_id == "estimated_charging_time":return minutes
             return format_datetime(datetime.now(util.TZ) + timedelta(minutes=minutes), format="medium", locale=settings["babelLocale"])
         if sensor_id == "charging_power" and result is not None:
-            item = data.get("chargingPower", {})
+            payload = data.get("data", data) if isinstance(data, dict) else {}
+            item = payload.get("chargingPower", {}) if isinstance(payload, dict) else {}
             unit = item.get("unit")
             if unit in ("kW", "kilowatt"):return float(result) * 1000
             if unit not in ("W", "watt", None):return None

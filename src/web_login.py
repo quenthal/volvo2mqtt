@@ -41,6 +41,8 @@ class Service:
     def handler(self):
         service = self
         class Handler(BaseHTTPRequestHandler):
+            timeout = 20  # Idle or slow clients must not hold worker threads indefinitely.
+
             def log_message(self, *args):
                 pass  # Never log callback codes, cookies or request URLs.
 
@@ -59,7 +61,10 @@ class Service:
 
             def authorized(self):
                 expected = "Basic " + base64.b64encode(("admin:"+service.password).encode()).decode()
-                return secrets.compare_digest(self.headers.get("Authorization", ""), expected)
+                supplied = self.headers.get("Authorization", "")
+                if secrets.compare_digest(supplied, expected):return True
+                if supplied:time.sleep(1)  # Slow down password guessing.
+                return False
 
             def do_GET(self):
                 path = urlsplit(self.path).path

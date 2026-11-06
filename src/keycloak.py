@@ -27,6 +27,7 @@ class Client:
         self.lock = threading.RLock()
         self.token = None
         self.dirty = False
+        self.rejected = None
         for key in ("client_id", "client_secret", "redirect_uri", "scopes"):
             if not config.get(key):
                 raise ValueError("Missing oauth setting: " + key)
@@ -110,6 +111,7 @@ class Client:
                 os.fsync(stream.fileno())
             os.replace(name, self.path)
             self.dirty = False
+            self.rejected = None
         finally:
             if os.path.exists(name):
                 os.unlink(name)
@@ -119,6 +121,9 @@ class Client:
             if self.dirty:
                 self._save(self.token)
             if self.token is None:
+                # Do not resend a refresh token Volvo already rejected; wait for a new login to replace the file.
+                if self.rejected is not None and self.rejected == self._stamp():
+                    raise LoginRequired("Volvo authorisation expired or was revoked; log in again")
                 try:
                     self.token = json.loads(self.path.read_text(encoding="utf-8"))
                 except (FileNotFoundError, ValueError):
@@ -135,12 +140,22 @@ class Client:
                 self.token = None
                 raise LoginRequired("Invalid saved token; log in again") from None
             if not valid:
+                # Stamp before the request: a login saved meanwhile by another process must not be marked rejected.
+                stamp = self._stamp()
                 try:
                     self._save(self._request(dict(grant_type="refresh_token", refresh_token=token["refresh_token"])))
                 except LoginRequired:
                     self.token = None
+                    self.rejected = stamp
                     raise
             return self.token["access_token"]
+
+    def _stamp(self):
+        try:
+            stat = self.path.stat()
+            return (stat.st_mtime_ns, stat.st_size, stat.st_ino)
+        except FileNotFoundError:
+            return None
 
 
 def configured_client():

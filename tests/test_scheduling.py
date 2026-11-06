@@ -84,8 +84,12 @@ class SchedulingTests(unittest.TestCase):
         response=Mock(status_code=200,text='')
         response.json.return_value={'data':{'engineStatus':{'value':'RUNNING'}}}
         with patch.object(volvo,'refresh_auth'),patch.object(volvo,'cached_request',return_value=response),patch.object(mqtt,'clear_climate_assumption') as clear,patch.object(volvo.session,'post') as post:
-            self.assertEqual(volvo.api_call('https://example.invalid/{}','GET','TEST','engine_state'),'ON')
-            clear.assert_called_once_with('TEST');post.assert_not_called()
+            with patch.dict(mqtt.assumed_climate_state,{'TEST':'OFF'},clear=True):
+                self.assertEqual(volvo.api_call('https://example.invalid/{}','GET','TEST','engine_state'),'ON')
+                clear.assert_not_called()
+            with patch.dict(mqtt.assumed_climate_state,{'TEST':'ON'},clear=True):
+                self.assertEqual(volvo.api_call('https://example.invalid/{}','GET','TEST','engine_state'),'ON')
+                clear.assert_called_once_with('TEST');post.assert_not_called()
 
     def test_pending_toggle_failure_restores_assumption(self):
         import mqtt

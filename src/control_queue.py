@@ -33,9 +33,11 @@ class ControlQueue:
                     continue
                 del self.pending[key]
                 previous=self.last.get(key)
-                if previous and previous[0]==entry[1] and time.monotonic()-previous[1]<30:
-                    if entry[3]:entry[3]()
-                    continue
+                duplicate=previous and previous[0]==entry[1] and time.monotonic()-previous[1]<30
+            if duplicate:
+                # Callbacks run outside the condition; callers may hold their own locks while submitting.
+                if entry[3]:entry[3]()
+                continue
             try:
                 accepted=entry[2]()
                 if accepted:

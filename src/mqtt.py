@@ -30,6 +30,8 @@ climate_state_lock = threading.RLock()
 climate_generation = {}
 pending_climate = {}
 climate_request_generation = {}
+published_configs = {}
+async_refresh_lock = threading.Lock()
 
 def connect():
     client_id = "volvoAAOS2mqtt" if os.environ.get("IS_HA_ADDON") \
@@ -151,6 +153,8 @@ def on_connect(client, userdata, flags, rc):
     # set a better name for the mqtt_loop Thread
     threading.current_thread().name = 'mqtt_thread'
     logging.info("MQTT connected")
+    # The broker may have lost retained discovery; let the next refresh republish it.
+    published_configs.clear()
 
     send_heartbeat()
     if len(subscribed_topics) > 0:
@@ -219,7 +223,7 @@ def on_message(client, userdata, msg):
         return None
     elif "update_data" in msg.topic:
         if payload == "PRESS":
-            update_car_data(True)
+            update_car_data_async(True)
             return None
         return None
     elif "update_interval" in msg.topic:
@@ -229,7 +233,7 @@ def on_message(client, userdata, msg):
                settings.update({"updateInterval": int(update_interval)})
             else:
                 logging.warning(f"Interval {update_interval} seconds is to low. Doing nothing!")
-            update_car_data()
+            update_car_data_async()
             return None
         except ValueError as error:
             logging.error(f"Unable to change update_interval {error} payload={payload}")
@@ -266,7 +270,7 @@ def start_climate_timer(d, vin):
         Timer(timer_seconds, activate_climate_timer, (vin, start_datetime.isoformat(),)).start()
         active_schedules[vin]["timers"].append(start_datetime.isoformat())
         logging.debug(f"Climate timer set to {start_datetime}")
-        update_car_data()
+        update_car_data_async()
     else:
         logging.warning("Timer can not be set. Unusable start time entered")
 
@@ -280,15 +284,14 @@ def publish_local_state(vin, entity_id, state):
 def _unlock_car(vin):
     if not volvo.api_call(CAR_UNLOCK_URL,"POST",vin):return False
     publish_local_state(vin,"lock_status","UNLOCKING")
-    volvo.check_lock_status(vin,"LOCKED")
-    return True
+    # Only a confirmed state counts as success, so an unconfirmed request can be repeated.
+    return volvo.check_lock_status(vin,"LOCKED")
 
 
 def _lock_car(vin):
     if not volvo.api_call(CAR_LOCK_URL,"POST",vin):return False
     publish_local_state(vin,"lock_status","LOCKING")
-    volvo.check_lock_status(vin,"UNLOCKED")
-    return True
+    return volvo.check_lock_status(vin,"UNLOCKED")
 
 
 def clear_climate_assumption(vin, generation=None):
@@ -344,6 +347,19 @@ def update_loop():
         else:
             logging.info("Data update is disabled, doing nothing for 30 seconds")
             time.sleep(30)
+
+
+def update_car_data_async(force_update=False):
+    # MQTT callbacks must not wait for vehicle API requests; commands would queue behind them.
+    if not async_refresh_lock.acquire(blocking=False):
+        logging.info("Refresh already pending; request ignored")
+        return
+    def run():
+        try:
+            update_car_data(force_update)
+        finally:
+            async_refresh_lock.release()
+    Thread(target=run,daemon=True,name="refresh_thread").start()
 
 
 def update_car_data(force_update=False, overwrite=None):
@@ -462,14 +478,20 @@ def update_ha_device(entity, vin, state):
     if entity.get("domain") in ["switch", "lock", "button"]:
         command_topic = f"homeassistant/{entity['domain']}/{vin}_{entity['id']}/command"
         config["command_topic"] = command_topic
-        subscribed_topics.append(command_topic)
-        mqtt_client.subscribe(command_topic)
+        subscribe_once(command_topic)
 
-    mqtt_client.publish(
-        f"homeassistant/{entity['domain']}/volvoAAOS2mqtt/{vin}_{entity['id']}/config",
-        json.dumps(config),
-        retain=True
-    )
+    config_topic = f"homeassistant/{entity['domain']}/volvoAAOS2mqtt/{vin}_{entity['id']}/config"
+    payload = json.dumps(config)
+    # The refresh loop runs every 30 s; republish discovery only when the icon or config changes.
+    if published_configs.get(config_topic) != payload:
+        if mqtt_client.publish(config_topic, payload, retain=True).rc == mqtt.MQTT_ERR_SUCCESS:
+            published_configs[config_topic] = payload
+
+
+def subscribe_once(topic):
+    if topic not in subscribed_topics:
+        subscribed_topics.append(topic)
+        mqtt_client.subscribe(topic)
 
 
 def create_ha_devices():
@@ -510,8 +532,7 @@ def create_ha_devices():
             if entity.get("domain") in ["switch", "lock", "button", "number"]:
                 command_topic = f"homeassistant/{entity['domain']}/{vin}_{entity['id']}/command"
                 config["command_topic"] = command_topic
-                subscribed_topics.append(command_topic)
-                mqtt_client.subscribe(command_topic)
+                subscribe_once(command_topic)
 
                 if entity["domain"] == "number":
                     config["min"] = entity["min"]
@@ -520,11 +541,9 @@ def create_ha_devices():
             elif entity.get("domain") == "image":
                 config["url_topic"] = f"homeassistant/{entity['domain']}/{vin}_{entity['id']}/image_url"
 
-            mqtt_client.publish(
-                f"homeassistant/{entity['domain']}/volvoAAOS2mqtt/{vin}_{entity['id']}/config",
-                json.dumps(config),
-                retain=True
-            )
+            config_topic = f"homeassistant/{entity['domain']}/volvoAAOS2mqtt/{vin}_{entity['id']}/config"
+            published_configs[config_topic] = json.dumps(config)
+            mqtt_client.publish(config_topic, published_configs[config_topic], retain=True)
     time.sleep(2)
     send_heartbeat()
 
@@ -571,13 +590,14 @@ def _submit_climate(vin, target):
         climate_request_generation[vin]=generation
         pending_climate[vin]=(generation,target)
         publish_local_state(vin,"climate_status",target)
-    def finished():
-        with climate_state_lock:
-            if pending_climate.get(vin,(None,None))[0]==generation:
-                pending_climate.pop(vin,None)
-                publish_local_state(vin,"climate_status",assumed_climate_state.get(vin,"OFF"))
-    action = _start_climate if target=="ON" else _stop_climate
-    control_queue.submit(vin,"climate",target,lambda:action(vin),finished)
+        def finished():
+            with climate_state_lock:
+                if pending_climate.get(vin,(None,None))[0]==generation:
+                    pending_climate.pop(vin,None)
+                    publish_local_state(vin,"climate_status",assumed_climate_state.get(vin,"OFF"))
+        action = _start_climate if target=="ON" else _stop_climate
+        # Submit under the same lock so a newer intent cannot be queued before an older one.
+        control_queue.submit(vin,"climate",target,lambda:action(vin),finished)
 
 
 def start_climate(vin):
