@@ -5,6 +5,7 @@ from collections import Counter
 from datetime import datetime, timezone
 from urllib.parse import urlsplit
 import requests
+import freshness
 
 class CountingSession(requests.Session):
     def __init__(self):
@@ -27,6 +28,7 @@ class EndpointCache:
         self.lock=threading.RLock()
         self.items={}
         self.charging={}
+        self.freshness=freshness.FreshnessStats()
     def interval(self,url,vin,default):
         path=urlsplit(url).path
         if path.endswith(("/doors","/windows")):return 60
@@ -50,7 +52,12 @@ class EndpointCache:
                 self.items[key]=(now,None)
                 return None
             self.items[key]=(time.monotonic(),response)
+            received=time.time()
             if response.status_code==200 and '/energy/' in url:
                 try:self.charging[vin]=response.json().get('chargingStatus',{}).get('value')=='CHARGING'
                 except (ValueError,AttributeError):pass
-            return response
+        # Measurement runs outside the shared cache lock.
+        if response.status_code==200:
+            try:self.freshness.record(url,vin,response.json(),received)
+            except (ValueError,AttributeError):pass
+        return response

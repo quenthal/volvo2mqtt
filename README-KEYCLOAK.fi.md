@@ -1,4 +1,4 @@
-# Volvo2mqtt 2026.11.3
+# Volvo2mqtt 2026.11.4
 
 Oma Docker-versio, pohjana Dielee/volvo2mqtt commit 25045e90e1899aa7b994bf2c7d2e933b041b4834.
 
@@ -7,6 +7,12 @@ Oma Docker-versio, pohjana Dielee/volvo2mqtt commit 25045e90e1899aa7b994bf2c7d2e
 Keycloak-kirjautuminen, tokenin uusiminen ja rotaatio on testattu oikealla tilillä. Sensorien ja lisäpainikkeiden MQTT-discovery on testattu. Aiemman koekäytön jälkeen komentojen jonotus ja hakujen rytmitys uusittiin; nämä viimeisimmät muutokset on testattu automaattisesti, mutta niiden autolla tehtävä hyväksymiskoe on vielä kesken.
 
 Tämä julkaisu tukee itsenäistä Docker-asennusta. Mukana oleva upstreamin HA-lisäosarakenne ei ole tässä julkaisussa toimivaksi sovitettu tai testattu. Vanha OTP-anturi jää vanhaan haaraan.
+
+## Muutokset 2026.11.4
+
+- Painikkeet (Climate start/stop, väläytys, äänimerkki ja muut) lähettävät jokaisen painalluksen. 30 s toistojen esto koskee enää lukitusta, ja sielläkin vain vahvistettua tilaa. 1 s debounce säilyy: sen sisällä viimeinen painallus voittaa. Jos jono on varattu (esim. edellinen komento tai lukon vahvistus kesken), saman ryhmän odottava pyyntö korvautuu uudemmalla, ja korvautuminen kirjataan lokiin.
+- Lokiin kirjataan korvatut ja ohitetut ohjauspyynnöt.
+- Datan tuoreuden mittaus: kerran tunnissa lokiin endpointeittain hakujen määrä, uusia aikaleimoja tuoneiden hakujen määrä sekä datan iän mediaani ja p90 (hakuhetki − uusin kentän aikaleima). Arvoja tai VIN:iä ei kirjata.
 
 ## Muutokset 2026.11.3
 

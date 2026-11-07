@@ -182,7 +182,8 @@ def on_message(client, userdata, msg):
                     logging.warning("Ignoring retained or invalid optional command")
                     return None
                 control_queue.submit(vehicle_vin, entity["id"], "PRESS",
-                    lambda vin=vehicle_vin, key=entity["id"]: volvo.execute_optional_command(vin,key))
+                    lambda vin=vehicle_vin, key=entity["id"]: volvo.execute_optional_command(vin,key),
+                    suppress_repeat=False)
                 return None
     if msg.topic == otp_mqtt_topic:
         if msg.retain == 0:
@@ -555,9 +556,10 @@ def lock_car(vin):
 
 
 def start_climate(vin):
-    # Start and stop share one queue group: the latest press wins and repeats within 30 s are suppressed.
-    control_queue.submit(vin,"climate","START",lambda:_start_climate(vin))
+    # Start and stop share one queue group: the latest press within the 1 s debounce wins.
+    # Every press is sent; Volvo's acceptance does not guarantee execution, so a repeat may be intentional.
+    control_queue.submit(vin,"climate","START",lambda:_start_climate(vin),suppress_repeat=False)
 
 
 def stop_climate(vin):
-    control_queue.submit(vin,"climate","STOP",lambda:_stop_climate(vin))
+    control_queue.submit(vin,"climate","STOP",lambda:_stop_climate(vin),suppress_repeat=False)
