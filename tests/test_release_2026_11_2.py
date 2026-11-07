@@ -37,18 +37,6 @@ class ReleaseFixTests(unittest.TestCase):
         q.submit("car","climate","ON",lambda:True,done);self.wait_idle(q)
         self.assertEqual(acquired,[True])
 
-    def test_climate_submission_is_atomic_with_generation(self):
-        order=[]
-        def submit(vin,group,target,action,done=None):
-            order.append((mqtt.climate_request_generation[vin],target))
-        with patch.object(mqtt.control_queue,"submit",side_effect=submit),patch.object(mqtt,"publish_local_state"),\
-                patch.dict(mqtt.pending_climate,{},clear=True),patch.dict(mqtt.climate_request_generation,{},clear=True):
-            threads=[threading.Thread(target=mqtt.start_climate if i%2 else mqtt.stop_climate,args=("TEST",)) for i in range(20)]
-            for t in threads:t.start()
-            for t in threads:t.join()
-            self.assertEqual([g for g,_ in order],list(range(1,21)))
-            self.assertEqual(mqtt.pending_climate["TEST"],(20,order[-1][1]))
-
     def test_refresh_commands_do_not_block_mqtt_thread(self):
         msg=Mock(topic="homeassistant/button/TEST_update_data/command",payload=b"PRESS",retain=0)
         release=threading.Event();calls=[]

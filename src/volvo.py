@@ -16,7 +16,7 @@ from config import settings
 from babel.dates import format_datetime
 from json import JSONDecodeError
 from const import charging_system_states, charging_connection_states, door_states, window_states, \
-    VEHICLES_URL, VEHICLE_DETAILS_URL, RECHARGE_STATE_URL, CLIMATE_START_URL, \
+    VEHICLES_URL, VEHICLE_DETAILS_URL, RECHARGE_STATE_URL, \
     WINDOWS_STATE_URL, LOCK_STATE_URL, TYRE_STATE_URL, supported_entities, FUEL_BATTERY_STATE_URL, \
     STATISTICS_URL, ENGINE_DIAGNOSTICS_URL, VEHICLE_DIAGNOSTICS_URL, API_BACKEND_STATUS, WARNINGS_URL, engine_states, \
     otp_max_loops
@@ -91,7 +91,6 @@ def get_vehicles():
     if len(vins) == 0:
         raise Exception("No vehicle found, exiting application!")
     else:
-        initialize_climate(vins)
         initialize_scheduler(vins)
         mqtt.delete_old_entities()
         logging.info("%s vehicle(s) found", len(vins))
@@ -266,15 +265,6 @@ def initialize_scheduler(vins):
         mqtt.mqtt_client.subscribe(topic)
 
 
-def initialize_climate(vins):
-    for vin in vins:
-        mqtt.assumed_climate_state[vin] = "OFF"
-
-
-def disable_climate(vin):
-    mqtt.clear_climate_assumption(vin)
-
-
 def check_lock_status(vin, old_state):
     target = "UNLOCKED" if old_state == "LOCKED" else "LOCKED"
     state = None
@@ -336,10 +326,14 @@ def api_call(url, method, vin, sensor_id=None, force_update=False, key_change=Fa
         if response is None:return None
     elif method == "POST":
         logging.debug(f"Starting {method} call against {url}")
+        command = url.rsplit("/", 1)[-1]
+        operation_id = vehicle_commands.operation_id()
         try:
-            response = session.post(url.format(vin), json={}, timeout=20, allow_redirects=False)
+            response = session.post(url.format(vin), json={}, timeout=20, allow_redirects=False,
+                                    headers={"vcc-api-operationId": operation_id})
         except requests.exceptions.RequestException as e:
-            logging.error(f"Error getting data from {url} : {e}")
+            logging.error("Vehicle command %s result unknown: %s (operationId %s, not retried)",
+                          command, type(e).__name__, operation_id)
             return None
     else:
         logging.error(f"Unkown method posted: {method}. Returning nothing")
@@ -349,37 +343,25 @@ def api_call(url, method, vin, sensor_id=None, force_update=False, key_change=Fa
     try:
         data = util.drop_null_fields(response.json())
     except JSONDecodeError as e:
+        if method == "POST":
+            # Still log the command outcome (with operation id) for non-JSON error bodies.
+            return vehicle_commands.log_result(command, response, {}, operation_id)
         logging.error(f"Fetched json decode error, Volvo API seems to return garbage. Skipping update. Error: {e}")
         return None
 
     if method == "POST":
-        if response.status_code != 200:
-            logging.warning("Vehicle command rejected: HTTP %s (not retried)", response.status_code)
-            return False
-        result = data.get("data", data) if isinstance(data, dict) else {}
-        status = result.get("invokeStatus") if isinstance(result, dict) else None
-        accepted = status in ("WAITING", "RUNNING", "COMPLETED", "SUCCESS")
-        logging.info("Vehicle command acceptance: %s", status if accepted else "not confirmed")
-        return accepted
+        return vehicle_commands.log_result(command, response, data, operation_id)
 
     if response.status_code == 200:
         logging.debug(response.text)
         try:
-            parsed = parse_api_data(data, sensor_id)
-            if sensor_id == "engine_state" and parsed == "ON" and mqtt.assumed_climate_state.get(vin) == "ON":
-                logging.info("Engine state ON observed; clearing assumed pre-climatization (no command sent)")
-                mqtt.clear_climate_assumption(vin)
-            return parsed
+            return parse_api_data(data, sensor_id)
         except (KeyError, TypeError, ValueError, IndexError):
             logging.warning("Skipping malformed API data for sensor %s", sensor_id)
             return None
     else:
         logging.debug(response.text)
-        if url == CLIMATE_START_URL and response.status_code == 503:
-            logging.warning("Car in use, cannot start pre climatization")
-            mqtt.assumed_climate_state[vin] = "OFF"
-            mqtt.update_car_data()
-        elif "extended-vehicle" in url and response.status_code == 403:
+        if "extended-vehicle" in url and response.status_code == 403:
             # Suppress 403 errors for unsupported extended-vehicle api cars
             logging.debug("Suppressed 403 for extended-vehicle API")
             return None

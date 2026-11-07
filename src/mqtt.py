@@ -17,19 +17,13 @@ from const import CLIMATE_START_URL, CLIMATE_STOP_URL, CAR_LOCK_URL, \
 
 mqtt_client: mqtt.Client
 subscribed_topics = []
-assumed_climate_state = {}
 last_data_update = None
-climate_timer = {}
 engine_status = {}
 devices = {}
 active_schedules = {}
 otp_code = None
 control_queue = ControlQueue()
 update_lock = threading.Lock()
-climate_state_lock = threading.RLock()
-climate_generation = {}
-pending_climate = {}
-climate_request_generation = {}
 published_configs = {}
 async_refresh_lock = threading.Lock()
 
@@ -205,13 +199,11 @@ def on_message(client, userdata, msg):
             logging.error(f"Error - Cannot get vin from MQTT topic : {msg.topic}!")
             return None
 
-    if "climate_status" in msg.topic:
-        if payload == "ON":
+    if "climate_start" in msg.topic or "climate_stop" in msg.topic:
+        if payload == "PRESS" and "climate_start" in msg.topic:
             start_climate(vin)
-            return None
-        elif payload == "OFF":
+        elif payload == "PRESS":
             stop_climate(vin)
-            return None
         return None
     elif "lock_status" in msg.topic:
         if payload == "LOCK":
@@ -294,20 +286,9 @@ def _lock_car(vin):
     return volvo.check_lock_status(vin,"UNLOCKED")
 
 
-def clear_climate_assumption(vin, generation=None):
-    with climate_state_lock:
-        if generation is not None and climate_generation.get(vin)!=generation:return
-        timer=climate_timer.get(vin)
-        if timer:timer.cancel()
-        climate_generation[vin]=climate_generation.get(vin,0)+1
-        assumed_climate_state[vin]="OFF"
-        publish_local_state(vin,"climate_status","OFF")
-
-
 def _stop_climate(vin):
-    if not volvo.api_call(CLIMATE_STOP_URL,"POST",vin):return False
-    clear_climate_assumption(vin)
-    return True
+    # Acceptance only: the API does not report whether climatisation actually stopped.
+    return volvo.api_call(CLIMATE_STOP_URL,"POST",vin)
 
 
 def activate_climate_timer(vin, start_time):
@@ -317,19 +298,7 @@ def activate_climate_timer(vin, start_time):
 
 
 def _start_climate(vin):
-    if not volvo.api_call(CLIMATE_START_URL,"POST",vin):return False
-    with climate_state_lock:
-        old=climate_timer.get(vin)
-        if old:old.cancel()
-        generation=climate_generation.get(vin,0)+1
-        climate_generation[vin]=generation
-        assumed_climate_state[vin]="ON"
-        timer=Timer(1800,clear_climate_assumption,(vin,generation))
-        timer.daemon=True
-        climate_timer[vin]=timer
-        timer.start()
-        publish_local_state(vin,"climate_status","ON")
-    return True
+    return volvo.api_call(CLIMATE_START_URL,"POST",vin)
 
 
 def update_loop():
@@ -384,9 +353,7 @@ def _update_car_data(force_update=False, overwrite=None):
                 ov_vin = overwrite["vin"]
                 ov_state = overwrite["state"]
 
-            if entity["id"] == "climate_status":
-                state = pending_climate.get(vin, (None,assumed_climate_state[vin]))[1]
-            elif entity["id"] == "last_data_update":
+            if entity["id"] == "last_data_update":
                 state = last_data_update
             elif entity["id"] == "active_schedules":
                 state = active_schedules[vin]
@@ -561,6 +528,9 @@ def delete_old_entities():
         for entity in old_entity_ids:
             topic = f"homeassistant/sensor/volvoAAOS2mqtt/{vin}_{entity}/config"
             mqtt_client.publish(topic, payload="", retain=True)
+        # 2026.11.3 replaced the assumed-state climate switch with start/stop buttons.
+        mqtt_client.publish(f"homeassistant/switch/volvoAAOS2mqtt/{vin}_climate_status/config", payload="", retain=True)
+        mqtt_client.publish(f"homeassistant/switch/{vin}_climate_status/state", payload="", retain=True)
 
 
 def create_login_sensor():
@@ -584,25 +554,10 @@ def lock_car(vin):
     control_queue.submit(vin,"lock","LOCKED",lambda:_lock_car(vin))
 
 
-def _submit_climate(vin, target):
-    with climate_state_lock:
-        generation=climate_request_generation.get(vin,0)+1
-        climate_request_generation[vin]=generation
-        pending_climate[vin]=(generation,target)
-        publish_local_state(vin,"climate_status",target)
-        def finished():
-            with climate_state_lock:
-                if pending_climate.get(vin,(None,None))[0]==generation:
-                    pending_climate.pop(vin,None)
-                    publish_local_state(vin,"climate_status",assumed_climate_state.get(vin,"OFF"))
-        action = _start_climate if target=="ON" else _stop_climate
-        # Submit under the same lock so a newer intent cannot be queued before an older one.
-        control_queue.submit(vin,"climate",target,lambda:action(vin),finished)
-
-
 def start_climate(vin):
-    _submit_climate(vin,"ON")
+    # Start and stop share one queue group: the latest press wins and repeats within 30 s are suppressed.
+    control_queue.submit(vin,"climate","START",lambda:_start_climate(vin))
 
 
 def stop_climate(vin):
-    _submit_climate(vin,"OFF")
+    control_queue.submit(vin,"climate","STOP",lambda:_stop_climate(vin))

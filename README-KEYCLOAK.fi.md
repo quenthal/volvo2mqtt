@@ -1,4 +1,4 @@
-# Volvo2mqtt 2026.11.2
+# Volvo2mqtt 2026.11.3
 
 Oma Docker-versio, pohjana Dielee/volvo2mqtt commit 25045e90e1899aa7b994bf2c7d2e933b041b4834.
 
@@ -7,6 +7,12 @@ Oma Docker-versio, pohjana Dielee/volvo2mqtt commit 25045e90e1899aa7b994bf2c7d2e
 Keycloak-kirjautuminen, tokenin uusiminen ja rotaatio on testattu oikealla tilillä. Sensorien ja lisäpainikkeiden MQTT-discovery on testattu. Aiemman koekäytön jälkeen komentojen jonotus ja hakujen rytmitys uusittiin; nämä viimeisimmät muutokset on testattu automaattisesti, mutta niiden autolla tehtävä hyväksymiskoe on vielä kesken.
 
 Tämä julkaisu tukee itsenäistä Docker-asennusta. Mukana oleva upstreamin HA-lisäosarakenne ei ole tässä julkaisussa toimivaksi sovitettu tai testattu. Vanha OTP-anturi jää vanhaan haaraan.
+
+## Muutokset 2026.11.3
+
+- Esilämmityksen ON/OFF-kytkin (`switch.…_climate_status`) on poistettu, ja sen tilalle on tullut kaksi painiketta: **Climate start** ja **Climate stop**. Molemmat käyttävät yhteistä komentojonoa, jossa viimeinen painallus voittaa ja saman onnistuneen komennon toisto 30 s sisällä ohitetaan. Paikallinen tilaoletus, 30 minuutin ajastin ja ajotilasta tuleva nollaus on poistettu. Vanhan kytkimen discovery-tiedot poistetaan käynnistyksessä. Kytkintä käyttävät HA-automaatiot on siirrettävä painikkeisiin tai HA:n helperiin.
+- Rajapinta ei kerro esilämmityksen todellista tilaa. Joissakin autoissa (esim. C40/EX40) `climatization-stop` palauttaa `COMPLETED`, mutta lämmitys jatkuu. Varma tapa pysäyttää on Volvon sovellus.
+- Jokaiseen komentoon liitetään yksilöllinen `vcc-api-operationId`. Loki kirjaa komennon, `invokeStatus`- ja `message`-kentät sekä operationId:n, jotta Volvon tuki voi jäljittää komennon.
 
 ## Muutokset 2026.11.2
 
@@ -26,7 +32,7 @@ Tämä julkaisu tukee itsenäistä Docker-asennusta. Mukana oleva upstreamin HA-
 - Refresh-tokenien rotaatio, yhteinen token-käsittelijä MQTT- ja selainpalvelulle.
 - Energy v2 ja viisi uutta latausanturia.
 - Auton tuen mukaan valot, äänimerkki, niiden yhdistelmä ja reduced guard -lukitus.
-- Esilämmityksen toggle säilyy paikallisena oletuksena, yksi 30 minuutin ajastin.
+- Esilämmitys: erilliset Climate start- ja Climate stop -painikkeet (2026.11.3). Oletettua tilaa ei pidetä.
 - Autokohtainen komentojono: 1 s rauhoittuminen, viimeinen tavoite voittaa; komennot sarjassa, 3 s väli, saman onnistuneen tavoitteen toisto vaimennetaan 30 sekunniksi.
 - Normaalissa haussa havaittu ajotila päättää esilämmitysoletuksen. Ei viiden sekunnin taustakyselyä tai oven avaamiseen perustuvaa oletusta.
 - Lukituksen varmistus enintään kolmella ovitilahaulla, 10 s välein.

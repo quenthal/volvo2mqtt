@@ -60,54 +60,6 @@ class SchedulingTests(unittest.TestCase):
         cache.charging['TEST']=True
         self.assertEqual(cache.interval(energy,'TEST',300),120)
 
-    def test_climate_one_timer_and_stale_expiry_ignored(self):
-        from config import settings
-        settings.set('babelLocale','fi_FI')
-        import mqtt,volvo
-        with patch.object(volvo,'api_call',return_value=True),patch.object(mqtt,'publish_local_state') as publish,patch.object(mqtt,'Timer') as timer,patch.dict(mqtt.climate_timer,{},clear=True),patch.dict(mqtt.climate_generation,{},clear=True):
-            mqtt._start_climate('TEST');first=mqtt.climate_generation['TEST']
-            mqtt._start_climate('TEST')
-            timer.return_value.cancel.assert_called_once()
-            mqtt.clear_climate_assumption('TEST',first)
-            self.assertEqual(mqtt.assumed_climate_state['TEST'],'ON')
-            mqtt._stop_climate('TEST')
-            self.assertEqual(mqtt.assumed_climate_state['TEST'],'OFF')
-
-    def test_climate_only_local_no_bulk_refresh(self):
-        import mqtt,volvo
-        with patch.object(volvo,'api_call',return_value=True),patch.object(mqtt,'publish_local_state'),patch.object(mqtt,'Timer'),patch.object(mqtt,'update_car_data') as update:
-            mqtt._start_climate('TEST');mqtt._stop_climate('TEST')
-            update.assert_not_called()
-
-    def test_engine_observation_clears_assumption_without_post(self):
-        import mqtt,volvo
-        response=Mock(status_code=200,text='')
-        response.json.return_value={'data':{'engineStatus':{'value':'RUNNING'}}}
-        with patch.object(volvo,'refresh_auth'),patch.object(volvo,'cached_request',return_value=response),patch.object(mqtt,'clear_climate_assumption') as clear,patch.object(volvo.session,'post') as post:
-            with patch.dict(mqtt.assumed_climate_state,{'TEST':'OFF'},clear=True):
-                self.assertEqual(volvo.api_call('https://example.invalid/{}','GET','TEST','engine_state'),'ON')
-                clear.assert_not_called()
-            with patch.dict(mqtt.assumed_climate_state,{'TEST':'ON'},clear=True):
-                self.assertEqual(volvo.api_call('https://example.invalid/{}','GET','TEST','engine_state'),'ON')
-                clear.assert_called_once_with('TEST');post.assert_not_called()
-
-    def test_pending_toggle_failure_restores_assumption(self):
-        import mqtt
-        with patch.object(mqtt,'control_queue') as q,patch.object(mqtt,'publish_local_state') as publish,patch.dict(mqtt.assumed_climate_state,{'TEST':'OFF'},clear=True),patch.dict(mqtt.pending_climate,{},clear=True):
-            mqtt.start_climate('TEST')
-            self.assertEqual(mqtt.pending_climate['TEST'][1],'ON')
-            q.submit.call_args.args[4]()
-            self.assertNotIn('TEST',mqtt.pending_climate)
-            self.assertEqual(publish.call_args.args,('TEST','climate_status','OFF'))
-
-    def test_stale_completion_does_not_remove_newer_intent(self):
-        import mqtt
-        with patch.object(mqtt,'control_queue') as q,patch.object(mqtt,'publish_local_state'),patch.dict(mqtt.assumed_climate_state,{'TEST':'OFF'},clear=True),patch.dict(mqtt.pending_climate,{},clear=True):
-            mqtt.start_climate('TEST');old=q.submit.call_args.args[4]
-            mqtt.stop_climate('TEST');new=q.submit.call_args.args[4]
-            old();self.assertEqual(mqtt.pending_climate['TEST'][1],'OFF')
-            new();self.assertNotIn('TEST',mqtt.pending_climate)
-
     def test_duplicate_completion_cleans_pending(self):
         q=ControlQueue(.01,.01);action=Mock(return_value=True);done=Mock()
         q.submit('car','climate','ON',action,done);self.wait_idle(q)
