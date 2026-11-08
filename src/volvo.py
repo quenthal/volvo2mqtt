@@ -254,7 +254,9 @@ def execute_optional_command(vin, entity_id):
     if vin not in vins or entity_id not in allowed:
         return False
     refresh_auth()
-    return vehicle_commands.execute(session, vin, entity_id, allowed)
+    result = vehicle_commands.execute(session, vin, entity_id, allowed)
+    endpoint_cache.touch(vin, "command " + entity_id)
+    return result
 
 
 def initialize_scheduler(vins):
@@ -331,7 +333,11 @@ def api_call(url, method, vin, sensor_id=None, force_update=False, key_change=Fa
         try:
             response = session.post(url.format(vin), json={}, timeout=20, allow_redirects=False,
                                     headers={"vcc-api-operationId": operation_id})
+            # After the response, so a pre-command fetch cannot refill the invalidated cache.
+            endpoint_cache.touch(vin, "command " + command)
         except requests.exceptions.RequestException as e:
+            # The car may still execute it: refresh state actively, but never resend the command.
+            endpoint_cache.touch(vin, "command " + command)
             logging.error("Vehicle command %s result unknown: %s (operationId %s, not retried)",
                           command, type(e).__name__, operation_id)
             return None

@@ -1,4 +1,4 @@
-# Volvo2mqtt 2026.11.4
+# Volvo2mqtt 2026.11.5
 
 Oma Docker-versio, pohjana Dielee/volvo2mqtt commit 25045e90e1899aa7b994bf2c7d2e933b041b4834.
 
@@ -7,6 +7,16 @@ Oma Docker-versio, pohjana Dielee/volvo2mqtt commit 25045e90e1899aa7b994bf2c7d2e
 Keycloak-kirjautuminen, tokenin uusiminen ja rotaatio on testattu oikealla tilillä. Sensorien ja lisäpainikkeiden MQTT-discovery on testattu. Aiemman koekäytön jälkeen komentojen jonotus ja hakujen rytmitys uusittiin; nämä viimeisimmät muutokset on testattu automaattisesti, mutta niiden autolla tehtävä hyväksymiskoe on vielä kesken.
 
 Tämä julkaisu tukee itsenäistä Docker-asennusta. Mukana oleva upstreamin HA-lisäosarakenne ei ole tässä julkaisussa toimivaksi sovitettu tai testattu. Vanha OTP-anturi jää vanhaan haaraan.
+
+## Muutokset 2026.11.5
+
+Tilannesidonnainen haku. Mittaus 7.–8.11. (C40): pysäköity auto lähettää tilan vain tapahtumista, eikä ajon aikana tule sijaintia eikä energiatietoa.
+- Tila päätellään jo haetusta datasta: **Lepo**, **Aktiivinen** (10 min ovien, ikkunoiden tai lukon muutoksen, komennon tai moottorin sammumisen jälkeen) ja **Ajo** (moottori käynnissä).
+- Välit (s), Lepo / Aktiivinen / Ajo: ovet 120/30/300, ikkunat 180/30/300, ajotila 180/60/60, energy 180/120/600 (lataus 120), sijainti 3600/900/3600, mittarilukema 3600/900/1800, tilastot 3600/900/3600, diagnostiikka 1800, perustiedot 86 400.
+- Ovien, ikkunoiden tai lukon muutos ja komennon vastaus: ovet, ajotila, energy ja sijainti haetaan seuraavalla kierroksella yhdessä (kattaa myös saapumisen, jos moottorin sammuminen jäi hakujen väliin).
+- Moottorin sammuttua sijainti, mittarilukema ja energy haetaan noin minuutin välein 200 s ja sen jälkeen 2 min välein 10 min asti, kunnes auto on lähettänyt sammumisen jälkeisen tiedon. Tuntematon ajotilan arvo ei tulkitu sammumiseksi.
+- Vuorokausiraja 7 000 GET: sen ylittyessä käytetään Lepo-välejä, ja tästä annetaan varoitus.
+- Loki: tilasiirtymät, "Fresh data" aina kun endpointin aikaleima etenee (auton aika ja ikä, ei arvoja) sekä aikaleimattoman vastauksen kenttänimet kerran.
 
 ## Muutokset 2026.11.4
 

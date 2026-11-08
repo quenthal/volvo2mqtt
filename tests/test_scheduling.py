@@ -54,9 +54,9 @@ class SchedulingTests(unittest.TestCase):
         self.assertEqual(session.get.call_count,1)
         with patch('polling.time.monotonic',return_value=11):cache.get(session,url,'TEST',force=True)
         self.assertEqual(session.get.call_count,2)
-        self.assertEqual(cache.interval(url,'TEST',300),60)
+        self.assertEqual(cache.interval(url,'TEST',300),120)  # 2026.11.5: doors in REST mode
         energy='https://api.volvocars.com/energy/v2/vehicles/{}/state'
-        self.assertEqual(cache.interval(energy,'TEST',300),300)
+        self.assertEqual(cache.interval(energy,'TEST',300),180)  # 2026.11.5 REST
         cache.charging['TEST']=True
         self.assertEqual(cache.interval(energy,'TEST',300),120)
 

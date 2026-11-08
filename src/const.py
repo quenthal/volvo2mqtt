@@ -1,6 +1,6 @@
 from config import settings
 
-VERSION = "2026.11.4"
+VERSION = "2026.11.5"
 
 VEHICLES_URL = "https://api.volvocars.com/connected-vehicle/v2/vehicles"
 VEHICLE_DETAILS_URL = "https://api.volvocars.com/connected-vehicle/v2/vehicles/{0}"

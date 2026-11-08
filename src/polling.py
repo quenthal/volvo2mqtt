@@ -5,6 +5,7 @@ from collections import Counter
 from datetime import datetime, timezone
 from urllib.parse import urlsplit
 import requests
+import activity
 import freshness
 
 class CountingSession(requests.Session):
@@ -29,17 +30,20 @@ class EndpointCache:
         self.items={}
         self.charging={}
         self.freshness=freshness.FreshnessStats()
+        self.activity=activity.VehicleActivity()
+        self.daily_gets=lambda:0
     def interval(self,url,vin,default):
-        path=urlsplit(url).path
-        if path.endswith(("/doors","/windows")):return 60
-        if path.endswith('/engine-status'):return 120
-        if '/energy/' in path:return 120 if self.charging.get(vin,False) else 300
-        if path.endswith(("/diagnostics","/engine","/tyres","/warnings")):return 1800
-        if path.endswith(("/odometer","/statistics","/location")):return 900
-        if '/vehicles/' in path and path.rsplit('/',1)[-1].startswith('{'):return 86400
-        return max(60,default)
+        return self.activity.interval(url,vin,default,self.charging.get(vin,False),self.daily_gets())
+    def invalidate(self,vin,groups):
+        # Next refresh loop (<= 30 s) refetches these groups together.
+        with self.lock:
+            for key in [k for k in self.items if k[0]==vin and activity.group(k[1]) in groups]:
+                del self.items[key]
+    def touch(self,vin,reason):
+        self.invalidate(vin,self.activity.touch(vin,reason))
     def get(self,session,url,vin,default=300,force=False,bypass=False):
         key=(vin,url)
+        if isinstance(session,CountingSession):self.daily_gets=lambda:session.snapshot().get("GET",0)
         with self.lock:
             now=time.monotonic()
             old=self.items.get(key)
@@ -56,8 +60,19 @@ class EndpointCache:
             if response.status_code==200 and '/energy/' in url:
                 try:self.charging[vin]=response.json().get('chargingStatus',{}).get('value')=='CHARGING'
                 except (ValueError,AttributeError):pass
-        # Measurement runs outside the shared cache lock.
+        # Measurement and activity tracking run outside the shared cache lock.
         if response.status_code==200:
-            try:self.freshness.record(url,vin,response.json(),received)
-            except (ValueError,AttributeError):pass
+            try:payload=response.json()
+            except ValueError:payload=None
+            if payload is not None:
+                newest=freshness.newest_timestamp(payload)
+                self.freshness.record(url,vin,payload,received)
+                event=newest
+                if activity.group(url)=="engine":
+                    # Engine stop time from the engineStatus field only, not unrelated timestamps.
+                    data=payload.get("data",payload) if isinstance(payload,dict) else None
+                    event=freshness.newest_timestamp(data.get("engineStatus")) if isinstance(data,dict) else None
+                refetch=self.activity.observe(url,vin,payload,newest,event)
+                refetch=set(refetch)-{activity.group(url)}
+                if refetch:self.invalidate(vin,refetch)
         return response

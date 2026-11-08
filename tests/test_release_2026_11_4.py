@@ -78,14 +78,14 @@ class FreshnessTests(unittest.TestCase):
         with self.assertLogs(level="INFO") as logs:
             report=stats.record(url,"VIN",new)
         self.assertIn("doors n=3 new=2",report)
-        self.assertIn("last 61 min",logs.output[0])
+        self.assertTrue(any("last 61 min" in line for line in logs.output))
         # Timestamp-free fetches are counted; an older timestamp is not "new".
         stats.record("https://api.volvocars.com/x/{0}/fuel","VIN",{"data":{}})
         stats.record(url,"VIN",old)
         now[0]+=3600
         report=stats.record(url,"VIN",old)
         self.assertIn("doors n=2 new=0",report);self.assertIn("fuel n=1 new=0 untimed=1",report)
-        self.assertNotIn("SECRET_VALUE",logs.output[0]);self.assertNotIn("VIN",logs.output[0])
+        self.assertFalse(any("SECRET_VALUE" in line or "VIN" in line for line in logs.output))
 
     def test_cache_records_freshness_only_for_successful_fetches(self):
         cache=EndpointCache();cache.freshness=Mock();session=Mock()
