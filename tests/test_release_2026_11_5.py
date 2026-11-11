@@ -150,7 +150,7 @@ class FreshnessEventTests(unittest.TestCase):
         for secret in ("SECRET","VIN1","87","percentage"):self.assertNotIn(secret,text)
 
     def test_structure_masks_non_schema_keys(self):
-        text=freshness.structure({"YV1ABCDEFGH123456":{"value":1},"batteryChargeLevel":{"x_1":2,"unit":3}})
+        text=freshness.structure({"Not-a-schema-key":{"value":1},"batteryChargeLevel":{"x_1":2,"unit":3}})
         self.assertEqual(text,"{<key>:{value},batteryChargeLevel:{unit,<key>}}")
 
     def test_engine_stop_time_from_engine_field_only(self):
